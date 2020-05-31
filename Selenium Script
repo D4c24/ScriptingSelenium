@@ -1,0 +1,167 @@
+#!/usr/bin/python
+
+#############################################
+###          By: D4c24                    ###
+###        gh/D4c24/D4c                   ###
+#############################################
+
+from selenium import webdriver
+from selenium.webdriver.common.keys import Keys
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+import os
+import time
+import datetime
+import traceback
+import logging
+from logging.handlers import RotatingFileHandler
+
+#### variables globales ########
+fecha = str(datetime.date.today())
+profile = webdriver.FirefoxProfile()
+Row = 2
+
+### Archivo Logs ########
+logsPath = '/home//Documentos/Backup.log'
+Rthandler =RotatingFileHandler(logsPath, maxBytes=1024*1024, backupCount=3)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%d-%b-%y %H:%M:%S')
+Rthandler.setFormatter(formatter)
+logging.getLogger('').addHandler(Rthandler)
+logging.getLogger('').setLevel (logging.DEBUG)
+
+#### funcion Datos // Esta funion se encarga de realizar la consulta de los datos
+### almacenados en la hoja de calculo en Drive por medio de Google Sheets API
+logging.info("Conectando con Google Sheets...")
+logging.info("######################################################")
+def datos(Row):
+    scope = ['https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_name('Automatizacion.json', scope)
+    client = gspread.authorize(creds)
+    sheet = client.open('Creds_Test').sheet1
+    folder = sheet.cell(Row, 7).value
+    cuenta = sheet.cell(Row, 2).value
+    URLlogin = sheet.cell(Row, 3).value
+    URLdescarga = sheet.cell(Row, 4).value
+    usuario = sheet.cell(Row, 5).value
+    password = sheet.cell(Row, 6).value
+    count = len(sheet.col_values(1))
+    logging.info('Conexion establecida Google Sheets')
+    return (folder, cuenta, URLlogin, URLdescarga, usuario, password, count)
+try:
+    (folder, cuenta, URLlogin, URLdescarga, usuario, password, count) = datos(Row)
+except:
+    logging.error('Error conexion Google Sheets')
+    pass
+
+###### Configurar perfil de Selenium para el navegador firefox #######
+profile.set_preference("browser.download.folderList", 2)
+profile.set_preference("browser.download.manager.showWhenStarting", False)
+profile.set_preference("browser.helperApps.neverAsk.saveToDisk", "application/octet-stream")
+
+### Funcion encargada de borrar archivos residuales de backups anteriores
+def borrar_files():
+    borrar  = os.listdir(folder)
+    cantidad = len(borrar)
+    dir_antiguo = os.getcwd()
+    os.chdir(folder)
+    while cantidad > 0:
+        if cantidad > 0:
+            borrar = os.listdir(folder)
+            cantidad = len(borrar)
+            if cantidad == 0:
+                logging.info('Archivos Borrados__%s' % cuenta)
+            else:
+                logging.info("Borrando...%s" % borrar[0])
+                os.remove(borrar[0])
+        else:
+            logging.info("archivos borrados___%s" % cuenta)
+    os.chdir(dir_antiguo)
+
+### Funcion encargada de renombrar el archivo de Backup.
+def rename_files(filename):
+    newname = "Backup_%s" % cuenta + "_%s" % fecha + ".conf"
+    logging.info("Nuevo nombre: %s" % newname)
+    logging.info("Antiguo nombre: %s" % filename)
+    time.sleep(10)
+    if '.conf' in filename:
+        try:
+            os.rename(os.path.join(folder, filename), os.path.join(folder, newname))
+            logging.info("####!!!Descarga exitosa!!!####")
+            logging.info("***************************************")
+        except Exception as exc:
+            logging.error("Error al renombrar archivo %s" % filename)
+            traceback.format_exc()
+            logging.error(exc)
+            pass
+    else:
+        logging.warning("No se puede renombrar archivo %s" % filename)
+
+### Funcion encargada de realizar backup en los dispositivos Fortigate
+def fw_test():
+    logging.info("####!!!Cuenta:_%s####" % cuenta)
+    logging.info(URLlogin)
+    filename = ""
+    driver = webdriver.Firefox(firefox_profile = profile)
+    try:
+        driver.get(URLlogin)
+        time.sleep(6)
+        logging.info("Conexion establecida")
+    except Exception as exc:
+        logging.error("Error al cargar pagina de login %s" % URLlogin)
+        traceback.format_exc()
+        logging.error(exc)
+        pass
+
+    try:
+        user = driver.find_element_by_xpath("//*[@id='username']")
+        user.send_keys(usuario)
+        time.sleep(6)
+        passw = driver.find_element_by_xpath("//*[@id='secretkey']")
+        passw.send_keys(password)
+        passw.send_keys(Keys.ENTER)
+        time.sleep(6)
+        logging.info("Acceso exitoso")
+    except Exception as exc:
+        logging.error("Error con credenciales de acceso %s" % cuenta)
+        traceback.format_exc()
+        print exc
+        pass
+
+    try:
+        driver.get(URLdescarga)
+        time.sleep(8)
+        borrar_files()
+        time.sleep(4)
+        button = driver.find_element_by_xpath("//*[@id='submit_ok']").click()
+        time.sleep(6)
+        logging.info("descarga Backup exitosa %s" % cuenta)
+    except Excepttion as exc:
+        logging.error("Error descarga Backup %s" % cuenta)
+        traceback.format_exc()
+        logging.error(exc)
+    antiguo = os.getcwd()
+    try:
+        os.chdir(folder)
+        filename = str(max([f for f in os.listdir(folder)], key=lambda xa : os.path.getctime(os.path.join(folder,xa))))
+        os.chdir(antiguo)
+    except Exception as exc:
+        traceback.format_exc()
+        print exc
+        pass
+    driver.close()
+    return (filename)
+
+### Ciclo encargado de jecutar la tarea de backup en funcion de la cantidad de filas que existan en la tabla de Datos en Drive.
+for Row in range(2, count + 1):
+    if Row <= count:
+        (folder, cuenta, URLlogin, URLdescarga, usuario, password, column) = datos(Row)
+        logging.info("Folder de descargar cuenta: %s" % folder)
+        profile.set_preference("browser.download.dir", folder)
+        (filename) = fw_test()
+        rename_files(filename)
+        if Row == 0:
+            column = 0
+    else:
+        logging.info("#############Actividad Finalizada#############")
+
+print "****************** FIN ******************"
